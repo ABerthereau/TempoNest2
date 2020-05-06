@@ -18,6 +18,7 @@ import copy as copy
 import time
 import ghs
 
+
 HaveGPUS = False
 try:
 	import pycuda.autoinit
@@ -316,7 +317,7 @@ class Likelihood(object):
                                         double AmpGrad = 0;
                                         double SpecGrad = 0;
 
-                                        for(c = 0; c < NFBasis; c++){
+                        for(c = 0; c < NFBasis; c++){
 
 						double BLAmp = pow(10.0, 2*BLAmps[i]);
 						double BLSpec = BLSpecs[i]; 
@@ -1539,7 +1540,7 @@ class Likelihood(object):
 
 		if(FromPickle == False):
 
-
+			print(numtointerpolate, lenRFFT, np.sum(self.MaxCoeff))
 			InterpFShapeMatrix = np.zeros([numtointerpolate, lenRFFT, np.sum(self.MaxCoeff)])+0j
 			InterpFJitterMatrix = np.zeros([numtointerpolate,lenRFFT, np.sum(self.MaxCoeff)])+0j
 
@@ -1660,14 +1661,14 @@ class Likelihood(object):
 
 		if(doplot == True):
 
-		   
-			bm = np.zeros(len(np.fft.rfft(np.zeros(InterpBins)))) + 0j
-			sr = np.dot(self.InterpFBasis[0][:self.SavedNFBasis], self.MLShapeCoeff[:,0]) 
-			si = np.dot(self.InterpFBasis[0][self.SavedNFBasis:], self.MLShapeCoeff[:,0])
-			bm[1:self.SavedNFBasis+1] = sr + 1j*si
-			bmfft = np.fft.irfft(bm)
+			for i in range(len(self.InterpFBasis)):
+				bm = np.zeros(len(np.fft.rfft(np.zeros(InterpBins)))) + 0j
+				sr = np.dot(self.InterpFBasis[i][:self.NFBasis], self.MLShapeCoeff[:,0]) 
+				si = np.dot(self.InterpFBasis[i][self.NFBasis:], self.MLShapeCoeff[:,0])
+				bm[1:self.NFBasis+1] = sr + 1j*si
+				bmfft = np.fft.irfft(bm)
 
-			plt.plot(np.linspace(0,1,InterpBins), bmfft)
+				plt.plot(np.linspace(0,1,InterpBins), bmfft)
 
 			plt.xlabel('Phase')
 			plt.ylabel('Profile Amplitude')
@@ -1843,7 +1844,701 @@ class Likelihood(object):
 		return loglike
 
 
+	def calculateGHSHessian33(self, diagonalGHS = False, filename= 'hessian.log'):
 
+		NCoeff = self.TotCoeff-1
+
+		x0 = np.zeros(self.n_params)
+		cov_diag = np.zeros(self.n_params)
+
+		DenseParams = self.DenseParams
+		hess_dense = np.zeros([DenseParams,DenseParams])
+
+		if(self.incBaselineNoise == True):
+			self.BLNHess = np.zeros([self.NToAs, self.BaselineNoiseParams, self.BaselineNoiseParams])
+			self.BLNEigM = np.zeros([self.NToAs, self.BaselineNoiseParams, self.BaselineNoiseParams])
+
+		LinearSize = self.LinearParams
+
+		#####################Get Parameters####################################
+
+		if(self.incPAmps == True):
+			ProfileAmps = self.MLParameters[self.ParamDict['PAmps'][2]]
+
+		if(self.incPNoise == True):
+			ProfileNoise = self.MLParameters[self.ParamDict['PNoise'][2]]
+
+
+		if(self.incPhase == True):
+			Phase = self.MLParameters[self.ParamDict['Phase'][2]][0]
+		else:
+			Phase = 0
+
+		if(self.incLinearTM == True):
+			TimingParameters = self.MLParameters[self.ParamDict['LinearTM'][2]]
+			TimeSignal = np.dot(self.designMatrix, TimingParameters)	
+		#np.savetxt(fname,TimeSignal)
+		
+
+		if(self.incProfile == True):
+			ShapeAmps=np.zeros([self.TotCoeff, self.EvoNPoly+1])
+			ShapeAmps[0][0] = 1
+			ShapeAmps[1:]=self.MLParameters[self.ParamDict['Profile'][2]].reshape([NCoeff,(self.EvoNPoly+1)])
+		
+		
+		JitterSignal = np.zeros(self.NToAs)
+
+		if(self.incEQUAD == True):
+			EQUADSignal = self.MLParameters[self.ParamDict['EQUADSignal'][2]]
+			EQUADPriors  = 10.0**self.MLParameters[self.ParamDict['EQUADPrior'][2]]
+	
+			for i in range(self.NumEQPriors):
+				EQIndicies = np.where(self.EQUADInfo==i)[0]
+				Prior = EQUADPriors[i]
+				if(self.EQUADModel[i] == -1 or self.EQUADModel[i] == 0):
+					EQUADSignal[EQIndicies] *= Prior
+			JitterSignal += EQUADSignal
+
+		if(self.incECORR == True):
+			ECORRSignal = copy.copy(self.MLParameters[self.ParamDict['ECORRSignal'][2]])
+			ECORRPriors  = 10.0**self.MLParameters[self.ParamDict['ECORRPrior'][2]]
+	
+			for i in range(self.NumECORRPriors):
+				ECORRIndicies = np.where(self.ECORRInfo==i)[0]
+				Prior = ECORRPriors[i]
+				if(self.ECORRModel[i] == -1 or self.ECORRModel[i] == 0):
+					ECORRSignal[ECORRIndicies] *= Prior
+	
+			JitterSignal += ECORRSignal[self.EpochIndex]
+
+		if(self.incScatter == True):
+			ScatterFreqScale = self.MLParameters[self.ParamDict['ScatterFreqScale'][2]]
+			ScatteringParameters = 10.0**self.MLParameters[self.ParamDict['Scattering'][2]]
+
+		if(self.incBaselineNoise == True):
+
+			BaselineNoisePriorAmps  = copy.copy(self.MLParameters[self.ParamDict['BaselineNoiseAmpPrior'][2]])
+			BaselineNoisePriorSpecs  = copy.copy(self.MLParameters[self.ParamDict['BaselineNoiseSpecPrior'][2]])
+
+
+		xS = self.ShiftedBinTimes-Phase*self.ReferencePeriod-JitterSignal
+
+
+		if(self.incLinearTM == True):
+			xS -= TimeSignal
+
+
+		OneBin=self.FoldingPeriods/self.Nbins
+		InterpSize = np.shape(self.InterpFBasis)[0]
+
+
+	
+		xS = ( xS + self.FoldingPeriods/2) % (self.FoldingPeriods ) - self.FoldingPeriods/2
+		#np.savetxt(fname,xS)
+		
+
+		InterpBins = (np.floor(-xS%(OneBin)/self.InterpolatedTime+0.5)).astype(int)%InterpSize
+		WBTs = xS+self.InterpolatedTime*(InterpBins-1)
+		RollBins=(np.floor(WBTs/OneBin+0.5)).astype(np.int)
+
+		OneFBasis = self.InterpFBasis[InterpBins]
+		OneJBasis = self.InterpJBasis[InterpBins]
+
+		ssbfreqs = self.psr.ssbfreqs()/10.0**6
+
+		#ProfAmps = ShapeAmps[:,0] +  ShapeAmps[:,1]*(((ssbfreqs[0] - self.EvoRefFreq)/1000.0))
+
+		s = np.sum([np.dot(OneFBasis, ShapeAmps[:,i])*(((self.psr.ssbfreqs()/10.0**6 - self.EvoRefFreq)/1000.0)**i).reshape(self.NToAs,1) for i in range(self.EvoNPoly+1)], axis=0)
+
+		j = np.sum([np.dot(OneJBasis, ShapeAmps[:,i])*(((self.psr.ssbfreqs()/10.0**6 - self.EvoRefFreq)/1000.0)**i).reshape(self.NToAs,1) for i in range(self.EvoNPoly+1)], axis=0)
+
+		#np.savetxt(fname,s)
+		#np.savetxt(fname,j)
+		
+		like = 0
+		chisq = 0
+		detN = 0
+		for i in range(self.NToAs):
+
+			rfftfreqs=np.linspace(1,self.NFBasis,self.NFBasis)/self.Nbins[i]
+
+			RealRoll = np.cos(-2*np.pi*RollBins[i]*rfftfreqs)
+			ImagRoll = np.sin(-2*np.pi*RollBins[i]*rfftfreqs)
+
+
+			RollData = np.zeros(2*self.NFBasis)
+			RollData[:self.NFBasis] = RealRoll*self.ProfileFData[i][:self.NFBasis]-ImagRoll*self.ProfileFData[i][self.NFBasis:]
+			RollData[self.NFBasis:] = ImagRoll*self.ProfileFData[i][:self.NFBasis]+RealRoll*self.ProfileFData[i][self.NFBasis:]
+
+			if(self.NScatterEpochs > 0):
+
+				NoScatterS = copy.copy(s[i])
+
+				tau = np.sum(ScatteringParameters[self.ScatterInfo[i]])
+				f = np.linspace(1,self.NFBasis,self.NFBasis)/self.FoldingPeriods[i]
+				w = 2.0*np.pi*f
+				ISS = 1.0/(self.psr.ssbfreqs()[i]**ScatterFreqScale/self.ScatterRefFreq**(ScatterFreqScale))
+				ISS2 = 1.0/(self.psr.ssbfreqs()[i]**ScatterFreqScale/10.0**(9.0*ScatterFreqScale))
+				#ISS = 1.0/((self.psr.ssbfreqs()[i]**ScatterFreqScale)/(self.ScatterRefFreq**(ScatterFreqScale)))
+				#print i, self.psr.freqs[i], ISS, ISS2, tau*ISS
+				RConv, IConv = self.ConvolveExp(f, tau*ISS)
+
+				RConfProf = RConv*s[i][:self.NFBasis] - IConv*s[i][self.NFBasis:]
+				IConfProf = IConv*s[i][:self.NFBasis] + RConv*s[i][self.NFBasis:]
+
+				s[i][:self.NFBasis] = RConfProf
+				s[i][self.NFBasis:] = IConfProf
+
+				RConfProf = RConv*j[i][:self.NFBasis] - IConv*j[i][self.NFBasis:]
+				IConfProf = IConv*j[i][:self.NFBasis] + RConv*j[i][self.NFBasis:]
+
+				j[i][:self.NFBasis] = RConfProf
+				j[i][self.NFBasis:] = IConfProf
+
+				RBasis = (RConv*OneFBasis[i,:self.NFBasis,:].T - IConv*OneFBasis[i,self.NFBasis:,:].T).T
+				IBasis = (IConv*OneFBasis[i,:self.NFBasis,:].T + RConv*OneFBasis[i,self.NFBasis:,:].T).T 
+
+				OneFBasis[i,:self.NFBasis,:] = RBasis
+				OneFBasis[i,self.NFBasis:,:] = IBasis
+
+
+
+			MNM = np.dot(s[i], s[i])
+			dNM = np.dot(RollData, s[i])
+
+			if(ProfileAmps[i] == None):
+				MLAmp = dNM/MNM
+				self.MLParameters[self.ParamDict['PAmps'][2]][i] = MLAmp
+			else:
+				MLAmp = ProfileAmps[i]
+
+			PSignal = MLAmp*s[i]
+			Res=RollData-PSignal
+
+			RR = np.dot(Res, Res)
+
+			if(ProfileNoise[i] == None):		
+				MLSigma =  np.std(Res)
+				self.MLParameters[self.ParamDict['PNoise'][2]][i] = MLSigma
+			else:
+				MLSigma = ProfileNoise[i]
+
+			Noise = np.ones(2*self.NFBasis)*MLSigma**2
+			#print('MLSIGMA ', MLSigma, 'NOISE ', Noise)
+
+			if(self.incBaselineNoise == True):
+
+                                BLRefF = self.BaselineNoiseRefFreq
+                                BLNFreqs = np.zeros(2*self.NFBasis)
+                                BLNFreqs[:self.NFBasis] = (np.linspace(1,self.NFBasis,self.NFBasis)/BLRefF)
+                                BLNFreqs[self.NFBasis:] = (np.linspace(1,self.NFBasis,self.NFBasis)/BLRefF)
+
+                                Amp=10.0**(2*BaselineNoisePriorAmps[i])
+                                Spec = BaselineNoisePriorSpecs[i]
+                                BLNPower = Amp*pow(BLNFreqs, -Spec)
+
+				BLNPower[self.NFBasis-5:self.NFBasis] = 0
+				BLNPower[-5:] = 0
+
+				Noise += BLNPower
+
+			
+			MNM = np.dot(s[i], s[i]/Noise)
+			dNM = np.dot(RollData, s[i]/Noise)
+			#np.savetxt(fname,Res)
+			
+
+			#np.savetxt(fname,Noise)
+			
+
+			if(ProfileAmps[i] == None):
+				MLAmp = dNM/MNM
+				self.MLParameters[self.ParamDict['PAmps'][2]][i] = MLAmp
+
+			#print(Noise)
+			like += 0.5*np.sum(Res*Res/Noise) + 2*self.NFBasis*0.5*np.sum(np.log(Noise))
+			chisq += 0.5*np.sum(Res*Res/Noise)
+			detN += 0.5*np.sum(np.log(Noise))
+			#print(chisq, 0.5*np.sum(np.log(Noise)))
+			#print i, MLAmp, MLSigma, chisq, detN, like
+
+			if(self.fitPAmps == True):
+				index=self.ParamDict['PAmps'][0]+i
+				x0[index] = MLAmp
+				cov_diag[index] = MNM
+
+
+			if(self.fitPNoise == True):
+				index=self.ParamDict['PNoise'][0]+i
+				x0[index] = MLSigma
+				cov_diag[index] = np.sum(-2*MLSigma**2/Noise**2 + 1.0/Noise + 4*MLSigma**2*Res**2/Noise**3 - Res**2/Noise**2)
+				#3*RR/(MLSigma*MLSigma*MLSigma*MLSigma) - 2.0*self.NFBasis/(MLSigma*MLSigma)
+
+
+			BLNIndex = 0
+			if(self.fitBaselineNoiseAmpPrior == True):
+			
+				Top = np.log(10)*BLNPower
+				T1 = -2*Top**2/Noise**2 
+				T2 = 2*Top*np.log(10.0)/Noise
+				T3 = 4*Top**2*Res**2/Noise**3
+				T4 = -2*Top*np.log(10.0)*Res**2/Noise**2
+			
+				HTerm = np.sum(T1 + T2 + T3 + T4)
+	
+				if(HTerm < 0):
+					HTerm = 5.0
+				
+				#print i, HTerm
+				index=self.ParamDict['BaselineNoiseAmpPrior'][0]+i
+				x0[index] = -1
+				cov_diag[index] = HTerm
+				self.BLNHess[i,BLNIndex, BLNIndex]  =  cov_diag[index]
+
+				BLNIndex += 1
+
+
+			if(self.fitBaselineNoiseSpecPrior == True):
+		
+                                Top = np.log(BLNFreqs)*BLNPower
+                                T1 = -0.5*Top**2/Noise**2 
+                                T2 = 0.5*Top*np.log(BLNFreqs)/Noise
+                                T3 = Top**2*Res**2/Noise**3
+                                T4 = -0.5*Top*np.log(BLNFreqs)*Res**2/Noise**2
+
+                                HTerm = np.sum(T1 + T2 + T3 + T4)
+
+                                if(HTerm < 0):
+                                        HTerm = 5.0
+
+				index=self.ParamDict['BaselineNoiseSpecPrior'][0]+i
+				x0[index] = 4
+				cov_diag[index] = HTerm
+
+
+
+				self.BLNHess[i,BLNIndex, BLNIndex]  = cov_diag[index]
+
+				if(self.fitBaselineNoiseAmpPrior == True):
+					
+	                                Top = BLNPower
+					T1 =  Top**2*np.log(10.0)*np.log(BLNFreqs)/Noise**2
+					T2 = -Top*np.log(10.0)*np.log(BLNFreqs)/Noise
+					T3 = -2*Top**2*Res**2*np.log(10.0)*np.log(BLNFreqs)/Noise**3
+					T4 =  Top*np.log(10.0)*np.log(BLNFreqs)*Res**2/Noise**2
+					
+					self.BLNHess[i, -1, -2]  =  np.sum(T1 + T2 + T3 + T4)
+					self.BLNHess[i, -2, -1]  =  np.sum(T1 + T2 + T3 + T4)
+
+					
+
+
+				
+
+			#Make Matrix for Linear Parameters
+
+			HessMatrix = np.zeros([LinearSize, 2*self.NFBasis])
+
+
+			PhaseScale = -1*MLAmp/np.sqrt(Noise)
+			LinCount = 0
+
+			for key in self.ParamDict.keys():
+				if(self.ParamDict[key][5] == 1):
+
+					#Hessian for Profile Amp (if dense)
+					if(key == 'PAmps' and self.fitPAmps == True and self.DensePAmps == True):
+						HessMatrix[LinCount,:] = s[i]/np.sqrt(Noise)
+						LinCount += 1
+
+					if(key == 'EQUADSignal'and self.fitEQUADSignal == True):
+						EQIndex = np.int(self.EQUADInfo[i])
+
+						if(self.EQUADModel[EQIndex] == -1):
+							HessMatrix[LinCount, :] = 0				
+
+						if(self.EQUADModel[EQIndex] == 0):
+							HessMatrix[LinCount, :] = j[i]*PhaseScale*EQUADPriors[EQIndex]
+
+						if(self.EQUADModel[EQIndex] == 1):
+							HessMatrix[LinCount, :] = j[i]*PhaseScale
+
+						LinCount += 1
+	
+					if(key == 'ECORRSignal'and self.fitECORRSignal == True):
+						EpochIndex = self.EpochIndex[i]
+						ECORRIndex = np.int(self.ECORRInfo[EpochIndex])
+
+						if(self.ECORRModel[ECORRIndex] == -1):
+							HessMatrix[LinCount, :] = 0				
+
+						if(self.ECORRModel[ECORRIndex] == 0):
+							HessMatrix[LinCount, :] = j[i]*PhaseScale*ECORRPriors[ECORRIndex]
+
+						if(self.ECORRModel[ECORRIndex] == 1):
+							HessMatrix[LinCount, :] = j[i]*PhaseScale
+
+						LinCount += 1
+
+
+					#Hessian for Phase parameter
+					if(key == 'Phase' and self.fitPhase == True):
+						HessMatrix[LinCount,:] = PhaseScale*j[i]*self.FoldingPeriods[i]
+						LinCount += 1
+
+					#Hessian for Timing Model
+					if(key == 'LinearTM' and self.fitLinearTM == True):
+						for c in range(self.numTime):
+							HessMatrix[LinCount, :] = j[i]*PhaseScale*self.designMatrix[i,c]
+							LinCount += 1
+
+
+					#Hessian for Shapelet parameters
+					if(key == 'Profile' and self.fitProfile == True):
+						fvals = ((self.psr.ssbfreqs()[i]/10.0**6 - self.EvoRefFreq)/1000.0)**np.arange(0,self.EvoNPoly+1)
+
+						ShapeBasis = OneFBasis[i]
+
+						for c in range(1, self.TotCoeff):
+							for p in range(self.EvoNPoly+1):
+								HessMatrix[LinCount, :] = fvals[p]*ShapeBasis[:,c]*MLAmp/np.sqrt(Noise)
+								LinCount += 1
+
+
+
+			OneHess = np.dot(HessMatrix, HessMatrix.T)
+			DiagHess = OneHess.diagonal()
+
+
+			######################Now Copy elements from OneHess to the full Hessian##############################
+
+			LinCount1 = 0
+			for k1 in range(len(self.ParamDict.keys())):
+				key1 = self.ParamDict.keys()[k1]
+				if(self.ParamDict[key1][5] == 1):
+					LinCount2 = LinCount1
+					Np1 = self.ParamDict[key1][1] - self.ParamDict[key1][0]
+					index1 = self.ParamDict[key1][0] - self.DiagParams
+
+					if(key1 == 'PAmps' or key1 == 'EQUADSignal'): 
+						index1 += i
+						Np1 = 1
+	
+					if(key1 == 'ECORRSignal'):
+						index1 += self.EpochIndex[i]
+						Np1 = 1
+	
+					#print "param1: ", key1, Np1, index1
+					hess_dense[index1:index1+Np1, index1:index1+Np1] += OneHess[LinCount1:LinCount1+Np1, LinCount1:LinCount1+Np1]
+					cov_diag[index1+self.DiagParams:index1+Np1+self.DiagParams] +=  DiagHess[LinCount1:LinCount1+Np1]
+					LinCount2 += Np1
+
+					for k2 in range(k1+1, len(self.ParamDict.keys())):
+						key2 = self.ParamDict.keys()[k2]
+						if(self.ParamDict[key2][5] == 1):
+							Np2 = self.ParamDict[key2][1] - self.ParamDict[key2][0]
+							index2 = self.ParamDict[key2][0] - self.DiagParams
+
+							if(key2 == 'PAmps' or key2 == 'EQUADSignal'): 
+								index2 += i
+								Np2 = 1
+			
+							
+							if(key2 == 'ECORRSignal'):
+								index2 += self.EpochIndex[i]
+								Np2= 1
+
+							#print "param2: ", key2, Np2, LinCount1, LinCount2, index1, index2, Np1
+							hess_dense[index1: index1+Np1, index2: index2+Np2] += OneHess[LinCount1: LinCount1+Np1,  LinCount2: LinCount2+Np2]
+							hess_dense[index2: index2+Np2, index1: index1+Np1] += OneHess[LinCount2: LinCount2+Np2,  LinCount1: LinCount1+Np1]
+
+							LinCount2 += Np2
+
+					LinCount1 += Np1
+
+			######################Add any priors to the hessian######################
+
+
+
+			if(self.fitPhase == True):
+
+				index = self.ParamDict['Phase'][0] - self.DiagParams
+				hess_dense[index,index]  += (1.0/self.PhasePrior/self.PhasePrior)/self.NToAs
+				#print index
+
+			if(self.fitEQUADSignal == True):
+				EQIndex = np.int(self.EQUADInfo[i])
+				index = self.ParamDict['EQUADSignal'][0] + i - self.DiagParams
+				#print index
+
+				if(self.EQUADModel[EQIndex] == -1):
+					#print "adding prior", -1, 1
+					hess_dense[index,index]  += 1.0
+
+				if(self.EQUADModel[EQIndex] == 0):
+					#print "adding prior", 0, 1 
+					hess_dense[index,index]  += 1.0
+					#Prior = 1.0/EQUADPriors[EQIndex]/EQUADPriors[EQIndex]
+					#hess_dense[index,index]  += Prior#/np.sum(self.EQUADInfo==self.EQUADInfo[i])
+
+				if(self.EQUADModel[EQIndex] == 1):
+					#print "adding prior", 1, 1.0/EQUADPriors[EQIndex]/EQUADPriors[EQIndex]
+					Prior = 1.0/EQUADPriors[EQIndex]/EQUADPriors[EQIndex]
+					hess_dense[index,index]  += Prior#/np.sum(self.EQUADInfo==self.EQUADInfo[i])
+
+			if(self.fitECORRSignal == True):
+				EpochIndex = self.EpochIndex[i]
+				ECORRIndex = np.int(self.ECORRInfo[EpochIndex])
+				index = self.ParamDict['ECORRSignal'][0] + self.EpochIndex[i] - self.DiagParams
+				#print index
+
+				if(self.ECORRModel[ECORRIndex] == -1):
+					hess_dense[index,index]  += 1.0/len(self.ChansPerEpoch[EpochIndex])
+
+				if(self.ECORRModel[ECORRIndex] == 0):
+					hess_dense[index,index]  += 1.0/len(self.ChansPerEpoch[EpochIndex])
+
+				if(self.ECORRModel[ECORRIndex] == 1):
+					Prior = 1.0/ECORRPriors[ECORRIndex]/ECORRPriors[ECORRIndex]
+					hess_dense[index,index]  += Prior/len(self.ChansPerEpoch[EpochIndex]) #/np.sum(self.EQUADInfo==self.EQUADInfo[i])
+
+
+			pcount=LinearSize
+
+			######################Now add all non-linear parameters to Hessian##############################
+
+
+			if(self.fitEQUADPrior == True):
+				index = self.ParamDict['EQUADPrior'][0] - self.DiagParams
+				EQIndex = np.int(self.EQUADInfo[i])
+
+				if(self.EQUADModel[EQIndex] == -1):
+					hess_dense[index,index]  += 15.0/np.sum(self.EQUADInfo==EQIndex)
+
+			if(self.fitECORRPrior == True):
+	
+				EpochIndex = self.EpochIndex[i]
+				ECORRIndex = np.int(self.ECORRInfo[EpochIndex])
+				index = self.ParamDict['ECORRPrior'][0] + ECORRIndex - self.DiagParams
+				#print i, EpochIndex, ECORRIndex, index, np.shape(hess_dense),15.0/np.sum(self.ECORRInfo==ECORRIndex)/len(self.ChansPerEpoch[EpochIndex])
+	
+				if(self.ECORRModel[ECORRIndex] == -1):
+					hess_dense[index,index]  += 15.0/np.sum(self.ECORRInfo==ECORRIndex)/len(self.ChansPerEpoch[EpochIndex])
+			
+				if(self.ECORRModel[ECORRIndex] == 0):
+					hess_dense[index,index]  += 15.0/np.sum(self.ECORRInfo==ECORRIndex)/len(self.ChansPerEpoch[EpochIndex])
+			
+				if(self.ECORRModel[ECORRIndex] == 1):
+					hess_dense[index,index]  += 100.0/np.sum(self.ECORRInfo==ECORRIndex)/len(self.ChansPerEpoch[EpochIndex])
+
+			if(self.fitScatter == True):
+
+				index = self.ParamDict['Scattering'][0] - self.DiagParams
+				for c in range(self.NScatterEpochs):
+					if(c in self.ScatterInfo[i]):
+
+
+						tau = ScatteringParameters[c]
+						f = np.linspace(1,self.NFBasis,self.NFBasis)/self.FoldingPeriods[i]
+						w = 2.0*np.pi*f
+						ISS = 1.0/(self.psr.ssbfreqs()[i]**ScatterFreqScale/self.ScatterRefFreq**(ScatterFreqScale))
+						ISS2 = 1.0/(self.psr.ssbfreqs()[i]**ScatterFreqScale/10.0**(9.0*ScatterFreqScale))
+						#ISS = 1.0/((self.psr.ssbfreqs()[i]**ScatterFreqScale)/(self.ScatterRefFreq**(ScatterFreqScale)))
+						#print i, self.psr.freqs[i], ISS, 1.0/ISS, ISS2, tau*ISS
+						RConv, IConv = self.ConvolveExp(f, tau*ISS)
+
+						RProf = NoScatterS[:self.NFBasis]*MLAmp
+						IProf = NoScatterS[self.NFBasis:]*MLAmp
+
+						RConfProf = RConv*RProf - IConv*IProf
+						IConfProf = IConv*RProf + RConv*IProf
+
+						pnoise = np.sqrt(Noise)[:self.NFBasis]
+
+						HessDenom = 1.0/(1.0 + tau**2*w**2*ISS**2)**3
+						GradDenom = 1.0/(1.0 + tau**2*w**2*ISS**2)**2
+
+						Reaself = (RollData[:self.NFBasis] - RProf*RConv + IProf*IConv)
+
+						'''
+						#plt.plot(np.linspace(0,1, self.NFBasis), RollData[:self.NFBasis]-(RProf*RConv - IProf*IConv))
+						plt.plot(np.linspace(0,1, self.NFBasis), RProf*RConv - IProf*IConv)
+						plt.plot(np.linspace(0,1, self.NFBasis), RProf)
+						plt.show()
+						'''
+						RealGrad = 2*tau**2*ISS**2*w**2*np.log(10.0)*GradDenom*RProf + tau*ISS*w*(tau**2*ISS**2*w**2 - 1)*np.log(10.0)*GradDenom*IProf
+						RealHess = -(4*tau**2*ISS**2*w**2*(tau**2*ISS**2*w**2 - 1)*np.log(10.0)**2)*HessDenom*RProf - tau*ISS*w*(1+tau**2*ISS**2*w**2*(tau**2*ISS**2*w**2 - 6))*np.log(10.0)**2*HessDenom*IProf
+
+						FullRealHess = 1*(RealHess*Reaself + RealGrad**2)*(1.0/pnoise**2)
+
+						ImagFunc = (RollData[self.NFBasis:] - RProf*IConv - IProf*RConv)
+						ImagGrad = 2*tau**2*ISS**2*w**2*np.log(10.0)*GradDenom*IProf - tau*ISS*w*(tau**2*ISS**2*w**2 - 1)*np.log(10.0)*GradDenom*RProf
+						ImagHess = -(4*tau**2*ISS**2*w**2*(tau**2*ISS**2*w**2 - 1)*np.log(10.0)**2)*HessDenom*IProf + tau*ISS*w*(1+tau**2*ISS**2*w**2*(tau**2*ISS**2*w**2 - 6))*np.log(10.0)**2*HessDenom*RProf
+
+
+
+						FullImagHess = 1*(ImagHess*ImagFunc + ImagGrad**2)*(1.0/pnoise**2)
+
+
+						profhess = np.zeros(2*self.NFBasis)
+						profhess[:self.NFBasis] = FullRealHess
+						profhess[self.NFBasis:] = FullImagHess
+
+						profgrad = np.zeros(2*self.NFBasis)
+						profgrad[:self.NFBasis] = RealGrad*(1.0/pnoise)
+						profgrad[self.NFBasis:] = ImagGrad*(1.0/pnoise)
+
+						LinearScatterCross = np.dot(HessMatrix, profgrad)
+
+
+
+						hess_dense[index+c,index+c] += np.sum(profhess)
+			
+
+
+			
+						if(self.fitScatterStepSize != 0):
+							hess_dense[index+c,index+c] = 1.0/self.fitScatterStepSize**2
+							cov_diag[self.DiagParams+index+c] = 1.0/self.fitScatterStepSize**2
+		
+			
+						SLinCount = 0
+						for k1 in range(len(self.ParamDict.keys())):
+							key1 = self.ParamDict.keys()[k1]
+							if(self.ParamDict[key1][5] == 1):
+
+								Np1 = self.ParamDict[key1][1] - self.ParamDict[key1][0]
+								index1 = self.ParamDict[key1][0] - self.DiagParams
+
+								if(key1 == 'PAmps' or key1 == 'EQUADSignal'): 
+									index1 += i
+									Np1 = 1
+
+								if(key1 == 'ECORRSignal'):
+									index1 += self.EpochIndex[i]
+									Np1 = 1
+					
+					
+
+								#print "param1: ", key1, Np1, index1
+								hess_dense[index1:index1+Np1, index+c] += -self.ScatterCrossTerms[c]*LinearScatterCross[SLinCount:SLinCount+Np1]
+								hess_dense[index+c, index1:index1+Np1] += -self.ScatterCrossTerms[c]*LinearScatterCross[SLinCount:SLinCount+Np1]
+			
+								SLinCount += Np1
+		
+			
+						cov_diag[self.DiagParams+index+c] += np.sum(profhess)
+
+						if(cov_diag[self.DiagParams+index+c] < 0):
+							cov_diag[self.DiagParams+index+c] = 2.0
+							hess_dense[index+c,index+c] = 2.0
+			
+			if(self.fitScatterFreqScale == True):
+	
+				index = self.ParamDict['ScatterFreqScale'][0] - self.DiagParams
+				hess_dense[index,index] = 5000.0
+				cov_diag[self.DiagParams+index] = 5000.0
+
+		print "likelihood", like
+		#return hess_dense
+		if(diagonalGHS == False):		
+			#Now do EVD on the dense part of the matrix
+
+
+                        if(self.BaselineNoiseParams > 0):
+                                for i in range(self.NToAs):
+                                        V2, M2 = sl.eigh(self.BLNHess[i])
+                                        cov_diag[self.BLNList[i]] = V2
+                                        self.BLNEigM[i] = M2
+                                        if(np.min(V2) < 1):
+                                                print "Poorly formed BLN Hessian", i, " using diagonal approximation\n"
+						self.BLNEigM[i] = np.eye(self.BaselineNoiseParams)
+						DHess = copy.copy(self.BLNHess[i].diagonal())
+						#DHess.setflags(write=1)
+						DHess[DHess < 1] = 1
+						cov_diag[self.BLNList[i]] = DHess
+
+
+			if(self.DiagParams < self.n_params):
+				V, M = sl.eigh(hess_dense)
+
+				cov_diag[self.DiagParams:] = V
+	
+				if(np.min(V) < 0):
+					print "Negative Eigenvalues: Poorly formed Hessian\n"
+
+			else:
+				M = np.ones(1)
+				hess_dense = np.ones(1)
+
+		else:
+
+			hess_dense = np.eye(np.shape(hess_dense)[0])
+			M = copy.copy(hess_dense)
+
+			if(self.BaselineNoiseParams > 0):
+                                for i in range(self.NToAs):
+                                        self.BLNEigM[i] = np.eye(self.BaselineNoiseParams)
+	
+
+		#Complete the start point by filling in extra parameters
+
+		for k in self.ParamDict.keys():
+			if(len(self.MLParameters[self.ParamDict[k][2]]) > 1):
+				self.MLParameters[self.ParamDict[k][2]] = np.float64(self.MLParameters[self.ParamDict[k][2]])
+			else:
+				self.MLParameters[self.ParamDict[k][2]] = np.array([np.float64(self.MLParameters[self.ParamDict[k][2]])])
+		
+		if(self.fitBaselineNoiseAmpPrior == True):
+			index=self.ParamDict['BaselineNoiseAmpPrior'][0]
+			x0[index:index + self.NToAs] = self.MLParameters[self.ParamDict['BaselineNoiseAmpPrior'][2]]
+		
+		if(self.fitBaselineNoiseSpecPrior == True):
+			index=self.ParamDict['BaselineNoiseSpecPrior'][0]
+			x0[index:index + self.NToAs] = self.MLParameters[self.ParamDict['BaselineNoiseSpecPrior'][2]]
+
+		if(self.fitPhase == True):
+			index=self.ParamDict['Phase'][0]
+			x0[index] = self.MLParameters[self.ParamDict['Phase'][2]][0]		
+
+		if(self.fitPhase == True):
+			index=self.ParamDict['Phase'][0]
+			x0[index] = self.MLParameters[self.ParamDict['Phase'][2]][0]
+
+		if(self.fitLinearTM == True):
+			index=self.ParamDict['LinearTM'][0]
+			x0[index:index + self.numTime] = self.MLParameters[self.ParamDict['LinearTM'][2]]
+
+		if(self.fitProfile == True):
+			index=self.ParamDict['Profile'][0]
+			x0[index:index + NCoeff*(self.EvoNPoly+1)] = self.MLParameters[self.ParamDict['Profile'][2]]		
+
+		if(self.fitEQUADSignal == True):
+			index=self.ParamDict['EQUADSignal'][0]
+			x0[index:index + self.NToAs] = self.MLParameters[self.ParamDict['EQUADSignal'][2]]
+	
+		if(self.fitEQUADPrior == True):
+			index=self.ParamDict['EQUADPrior'][0]
+			x0[index:index + self.NumEQPriors] = self.MLParameters[self.ParamDict['EQUADPrior'][2]]
+	
+		if(self.fitECORRSignal == True):
+			index=self.ParamDict['ECORRSignal'][0]
+			x0[index:index + self.NumEpochs] = self.MLParameters[self.ParamDict['ECORRSignal'][2]]
+	
+		if(self.fitECORRPrior == True):
+			index=self.ParamDict['ECORRPrior'][0]
+			x0[index:index + self.NumECORRPriors] = self.MLParameters[self.ParamDict['ECORRPrior'][2]]
+
+		if(self.fitScatter == True):
+			index=self.ParamDict['Scattering'][0]
+			x0[index:index + self.NScatterEpochs] = self.MLParameters[self.ParamDict['Scattering'][2]]
+	
+		if(self.fitScatterFreqScale == True):
+			index=self.ParamDict['ScatterFreqScale'][0]
+			x0[index] = self.MLParameters[self.ParamDict['ScatterFreqScale'][2]]
+
+
+		return x0, cov_diag, M, hess_dense
 
 	def calculateGHSHessian(self, diagonalGHS = False):
 
@@ -2722,6 +3417,7 @@ class Likelihood(object):
 
 		params = copy.copy(np.ctypeslib.as_array(x, shape=(ndim[0],)))
 		ndims = ndim[0]
+		fgrad=open('ggrad.out','a')
 
 		#Send relevant parameters to physical coordinates for likelihood
 
@@ -2754,7 +3450,6 @@ class Likelihood(object):
 		#print("like:", like[0], "grad", PrincipleGrad, DenseGrad)
 		for i in range(ndim[0]):
 			g[i] = grad[i]
-
 		like[0] = likeval
 
 
@@ -2765,8 +3460,7 @@ class Likelihood(object):
 
 		alpha = np.float64(1.0)
 		beta = np.float64(0.0)
-
-
+		
 		####################Copy Parameter Vector#################################
 
 		#params = copy.copy(np.ctypeslib.as_array(x, shape=(ndim[0],)))
@@ -2786,7 +3480,9 @@ class Likelihood(object):
 		like = 0
 
 		####################Get Parameters########################################
-	
+
+		#print(ndim)
+
 		if(self.fitPAmps == True):
 			index=self.ParamDict['PAmps'][0]
 			ProfileAmps = params[index:index+self.NToAs]
@@ -3131,7 +3827,7 @@ class Likelihood(object):
 			like += 0.5*gpu_Chisq + 0.5*NDet
 
 
-
+		print(like)
 		####################Calculate Gradients for amplitude and noise levels########################################
 
 		cublas.cublasDgemmBatched(self.CUhandle, 'n','n', 1, 1, 2*self.NFBasis, alpha, self.Signal_Pointer.gpudata, 1, self.NResVec_pointer.gpudata, 2*self.NFBasis, beta, self.AmpGrads_Pointer.gpudata, 1, self.NToAs)
@@ -3139,7 +3835,6 @@ class Likelihood(object):
 		if(self.fitPAmps == True):
 			index=self.ParamDict['PAmps'][0]
 			grad[index:index+self.NToAs] = -1*self.AmpGrads_GPU.get()[:,0,0]
-
 		if(self.fitPNoise == True):
 
 			index=self.ParamDict['PNoise'][0]
@@ -3148,7 +3843,7 @@ class Likelihood(object):
 				grad[index:index+self.NToAs] = (-ChisqVec+2*self.NFBasis)/np.sqrt(ProfileNoise)
 			else:
 				grad[index:index+self.NToAs] = gpu_Noise.get()
-				'''
+			'''
 				RVec = self.gpu_ResVec.get()[:,:,0]
 				NVec = self.gpu_NResVec.get()[:,0,:]
 
@@ -3327,7 +4022,6 @@ class Likelihood(object):
 		cublas.cublasDgemmBatched(self.CUhandle, 'n','n', 1, 1, 2*self.NFBasis, alpha, self.JSignal_Pointer.gpudata, 1, self.NResVec_pointer.gpudata, 2*self.NFBasis, beta, self.JitterGrads_Pointer.gpudata, 1, self.NToAs)
 
 		JGradVec = self.JitterGrads_GPU.get()[:,0,0]*ProfileAmps
-
 		if(self.fitPhase == True):
 			index=self.ParamDict['Phase'][0]
 			grad[index] = np.sum(JGradVec*self.ReferencePeriod)
@@ -3339,7 +4033,6 @@ class Likelihood(object):
 			index = self.ParamDict['LinearTM'][0]
 			TimeGrad = np.dot(JGradVec, self.designMatrix)
 			grad[index:index+self.numTime] = TimeGrad
-
 	
 		####################Calculate Gradient for Profile and Evolution########################################
 
@@ -3351,7 +4044,6 @@ class Likelihood(object):
 				cublas.cublasDgemmBatched(self.CUhandle, 'n','n', self.TotCoeff, 1, 2*self.NFBasis, alpha, self.ScatteredBasis_Pointer.gpudata, self.TotCoeff, self.NResVec_pointer.gpudata, 2*self.NFBasis, beta, self.ShapeGrads_Pointer.gpudata, self.TotCoeff, self.NToAs)
 
 			ShapeGradVec = self.ShapeGrads_GPU.get()[:,0,:]
-
 			index = self.ParamDict['Profile'][0]
 			for c in range(1, self.TotCoeff):
 				for p in range(self.EvoNPoly+1):
@@ -3454,277 +4146,7 @@ class Likelihood(object):
 		#print("like:", like[0], "grad", PrincipleGrad, DenseGrad)
 		#for i in range(ndim):
 		#	g[i] = grad[i]
-
-
-		#print "params: ", params
-		#print "grad: ", grad
-		#print "like", like
-
 		return like, grad
-
-
-
-	def GHSCPULike(self, ndim, x, like, g):
-		    
-		DiagParams = 0
-		if(self.fitPAmps == True):
-			DiagParams += self.NToAs
-		if(self.fitPNoise == True):
-			DiagParams += self.NToAs
-		 
-		    
-		params = copy.copy(np.ctypeslib.as_array(x, shape=(ndim[0],)))
-
-
-		#Send relevant parameters to physical coordinates for likelihood
-
-		DenseParams = params[DiagParams:]
-		PhysParams = np.dot(self.EigM, DenseParams)
-		params[DiagParams:] = PhysParams
-		#print("Phys Params: ", PhysParams)
-	
-		#DenseParams = params[:]
-		#PhysParams = np.dot(self.EigM, DenseParams)
-		#params[:] = PhysParams
-
-	
-		grad=np.zeros(ndim[0])
-
-
-		pcount = 0
-		if(self.fitPAmps == True):
-			ProfileAmps = params[pcount:pcount+self.NToAs]
-			pcount += self.NToAs
-		else:
-			ProfileAmps = self.MLParameters[0:self.NToAs]
-
-		if(self.fitPNoise == True):
-			ProfileNoise = params[pcount:pcount+self.NToAs]*params[pcount:pcount+self.NToAs]
-			pcount += self.NToAs
-		else:
-			ProfileNoise = self.MLParameters[self.NToAs:2*self.NToAs]*self.MLParameters[self.NToAs:2*self.NToAs]
-
-
-		if(self.fitPhase == True):
-			Phase = params[pcount]
-			pcount += 1
-		else:
-			Phase = self.MeanPhase
-	
-		phasePrior = 0.5*(Phase-self.MeanPhase)*(Phase-self.MeanPhase)/self.PhasePrior/self.PhasePrior
-		phasePriorGrad = 1*(Phase-self.MeanPhase)/self.PhasePrior/self.PhasePrior
-
-
-		TimingParameters = params[pcount:pcount+self.numTime]
-		pcount += self.numTime
-
-
-
-		NCoeff = self.TotCoeff-1
-
-		ShapeAmps=np.zeros([self.TotCoeff, self.EvoNPoly+1])
-		ShapeAmps[0][0] = 1
-		ShapeAmps[1:]=params[pcount:pcount + NCoeff*(self.EvoNPoly+1)].reshape([NCoeff,(self.EvoNPoly+1)])
-
-		pcount += NCoeff*(self.EvoNPoly+1)
-
-		if(self.fitScatter == True):
-			ScatteringParameters = 10.0**params[pcount:pcount+self.NScatterEpochs]
-			pcount += self.NScatterEpochs
-		else:
-			ScatteringParameters = 10.0**self.MLParameters[-self.NScatterEpochs:]
-
-
-		TimeSignal = np.dot(self.designMatrix, TimingParameters)
-
-
-
-
-
-		xS = self.ShiftedBinTimes - Phase*self.ReferencePeriod 
-
-		if(self.numTime>0):
-				xS -= TimeSignal
-	
-		xS = ( xS + self.ReferencePeriod/2) % (self.ReferencePeriod ) - self.ReferencePeriod/2
-
-		InterpBins = (xS%(self.ReferencePeriod/self.Nbins[:])/self.InterpolatedTime).astype(int)
-		WBTs = xS-self.InterpolatedTime*InterpBins
-		RollBins=(np.round(WBTs/(self.ReferencePeriod/self.Nbins[:]))).astype(np.int)
-
-		OneFBasis = self.InterpFBasis[InterpBins]
-		OneJBasis = self.InterpJBasis[InterpBins]
-
-		s = np.sum([np.dot(OneFBasis, ShapeAmps[:,i])*(((self.psr.freqs - self.EvoRefFreq)/1000.0)**i).reshape(self.NToAs,1) for i in range(self.EvoNPoly+1)], axis=0)
-
-		j = np.sum([np.dot(OneJBasis, ShapeAmps[:,i])*(((self.psr.freqs - self.EvoRefFreq)/1000.0)**i).reshape(self.NToAs,1) for i in range(self.EvoNPoly+1)], axis=0)
-
-		like[0] = 0
-		for i in range(self.NToAs):
-
-
-			rfftfreqs=np.linspace(1,self.NFBasis,self.NFBasis)/self.Nbins[i]
-
-			RealRoll = np.cos(-2*np.pi*RollBins[i]*rfftfreqs)
-			ImagRoll = np.sin(-2*np.pi*RollBins[i]*rfftfreqs)
-
-
-			RollData = np.zeros(2*self.NFBasis)
-			RollData[:self.NFBasis] = RealRoll*self.ProfileFData[i][:self.NFBasis]-ImagRoll*self.ProfileFData[i][self.NFBasis:]
-			RollData[self.NFBasis:] = ImagRoll*self.ProfileFData[i][:self.NFBasis]+RealRoll*self.ProfileFData[i][self.NFBasis:]
-
-			if(self.NScatterEpochs > 0):
-				tau = np.sum(ScatteringParameters[self.ScatterInfo[i]])
-				f = np.linspace(1,self.NFBasis,self.NFBasis)/self.ReferencePeriod
-				w = 2.0*np.pi*f
-				ISS = 1.0/(self.SSBFreqs[i]**4/10.0**(9.0*4.0))
-
-				RConv, IConv = self.ConvolveExp(f, tau*ISS)
-
-				RProf = s[i][:self.NFBasis]
-				IProf = s[i][self.NFBasis:]
-
-				RConfProf = RConv*RProf - IConv*IProf
-				IConfProf = IConv*RProf + RConv*IProf
-
-				PAmp = ProfileAmps[i]
-				GradDenom = 1.0/(1.0 + tau**2*w**2*ISS**2)**2
-				RealSGrad = 2*tau**2*ISS**2*w**2*np.log(10.0)*GradDenom*RProf*PAmp + tau*ISS*w*(tau**2*ISS**2*w**2 - 1)*np.log(10.0)*GradDenom*IProf*PAmp
-				ImagSGrad = 2*tau**2*ISS**2*w**2*np.log(10.0)*GradDenom*IProf*PAmp - tau*ISS*w*(tau**2*ISS**2*w**2 - 1)*np.log(10.0)*GradDenom*RProf*PAmp
-
-				#oldSTD = np.dot(s[i], s[i])
-
-				s[i][:self.NFBasis] = RConfProf
-				s[i][self.NFBasis:] = IConfProf
-
-				#newSTD = np.dot(s[i], s[i])
-
-				#s[i] *= oldSTD/newSTD
-
-				RConfProf = RConv*j[i][:self.NFBasis] - IConv*j[i][self.NFBasis:]
-				IConfProf = IConv*j[i][:self.NFBasis] + RConv*j[i][self.NFBasis:]
-
-				j[i][:self.NFBasis] = RConfProf
-				j[i][self.NFBasis:] = IConfProf
-
-				#j[i] *= oldSTD/newSTD
-
-				RBasis = (RConv*OneFBasis[i,:self.NFBasis,:].T - IConv*OneFBasis[i,self.NFBasis:,:].T).T
-				IBasis = (IConv*OneFBasis[i,:self.NFBasis,:].T + RConv*OneFBasis[i,self.NFBasis:,:].T).T 
-
-				OneFBasis[i,:self.NFBasis,:] = RBasis
-				OneFBasis[i,self.NFBasis:,:] = IBasis
-			
-				#OneFBasis[i] *= oldSTD/newSTD
-
-				'''
-				plt.plot(np.linspace(0,2,2*self.NFBasis), RollData, color='black')
-				plt.plot(np.linspace(0,2,2*self.NFBasis), ProfileAmps[i]*s[i], color='red')
-				plt.xlabel('Frequency')
-				plt.ylabel('Profile Amplitude')
-				plt.show()
-
-				plt.plot(np.linspace(0,2,2*self.NFBasis), RollData - ProfileAmps[i]*s[i], color='black')
-				plt.xlabel('Frequency')
-				plt.ylabel('Profile Amplitude')
-				plt.show()
-
-				bd = np.zeros(len(np.fft.rfft(self.ProfileData[i]))) + 0j
-				bd[1:self.NFBasis+1] = RollData[:self.NFBasis] + 1j*RollData[self.NFBasis:]
-				bdt = np.fft.irfft(bd)
-
-				bm = np.zeros(len(np.fft.rfft(self.ProfileData[i]))) + 0j
-				bm[1:self.NFBasis+1] =  ProfileAmps[i]*s[i][:self.NFBasis] + 1j* ProfileAmps[i]*s[i][self.NFBasis:]
-				bmt = np.fft.irfft(bm)
-
-				plt.plot(np.linspace(0,1,self.Nbins[i]), bdt, color='black')
-				plt.plot(np.linspace(0,1,self.Nbins[i]), bmt, color='red')
-				plt.xlabel('Phase')
-				plt.ylabel('Profile Amplitude')
-				plt.show()
-				plt.plot(np.linspace(0,1,self.Nbins[i]),bdt-bmt)
-				plt.xlabel('Phase')
-				plt.ylabel('Profile Residuals')
-				plt.show()
-				'''
-
-			Res = RollData-s[i]*ProfileAmps[i]
-			Chisq = np.dot(Res,Res)/ProfileNoise[i]
-
-			AmpGrad = -1*np.dot(s[i], Res)/ProfileNoise[i]
-			NoiseGrad = (-Chisq+2*self.NFBasis)/np.sqrt(ProfileNoise[i])
-
-			proflike = 0.5*Chisq + 0.5*2*self.NFBasis*np.log(ProfileNoise[i])
-
-
-			like += proflike   
-
-			pcount = 0
-			if(self.fitPAmps == True):
-				grad[pcount + i] = AmpGrad
-				pcount += self.NToAs
-		
-			if(self.fitPNoise == True):
-				grad[pcount + i] = NoiseGrad
-				pcount += self.NToAs
-
-	
-			PhaseGrad = np.dot(Res, j[i])*ProfileAmps[i]/ProfileNoise[i]
-			#Gradient for Phase
-			if(self.fitPhase == True):	
-				grad[pcount] += PhaseGrad*self.ReferencePeriod
-				pcount += 1
-
-			#Gradient for Timing Model
-			if(self.numTime>0):
-				TimeGrad = self.designMatrix[i]*PhaseGrad
-				grad[pcount:pcount+self.numTime] += TimeGrad
-				pcount += self.numTime
-
-			#Gradient for Shape Parameters
-			ShapeGrad = np.dot(OneFBasis[i].T, Res)/ProfileNoise[i]
-			fvals = ((self.psr.freqs[i] - self.EvoRefFreq)/1000.0)**np.arange(0,self.EvoNPoly+1)
-
-			for c in range(1, self.TotCoeff):
-				for p in range(self.EvoNPoly+1):
-					grad[pcount] += -fvals[p]*ShapeGrad[c]*ProfileAmps[i]
-					pcount += 1
-	
-			#Gradient for Scattering Parameters		
-			if(self.fitScatter == True):
-				for c in range(self.NScatterEpochs):
-					if(c in self.ScatterInfo[i]):
-						RScatterGrad = np.dot(RealSGrad, Res[:self.NFBasis])
-						IScatterGrad = np.dot(ImagSGrad, Res[self.NFBasis:])
-						grad[pcount+c] += (RScatterGrad + IScatterGrad)/ProfileNoise[i]
-						#print i, (RScatterGrad + IScatterGrad)/ProfileNoise[i]
-				pcount += self.NScatterEpochs
-
-		#print (like[0]+phasePrior)[0], (Phase-self.MeanPhase)[0], grad[DiagParams], phasePriorGrad[0], (grad[DiagParams] + phasePriorGrad)[0]
-		#Add phase prior to likelihood and gradient
-		if(self.fitPhase == True):	
-			like[0] += phasePrior
-			grad[DiagParams] += phasePriorGrad
-
-
-	
-		#Send relevant gradients to principle coordinates for sampling
-
-		DenseGrad = copy.copy(grad[DiagParams:])
-		PrincipleGrad = np.dot(self.EigM.T, DenseGrad)
-		grad[DiagParams:] = PrincipleGrad
-		
-		#DenseGrad = copy.copy(grad[:])
-		#PrincipleGrad = np.dot(self.EigM.T, DenseGrad)
-		#grad[:] = PrincipleGrad
-		#print("like:", like[0], "grad", PrincipleGrad, DenseGrad)
-		for i in range(ndim[0]):
-			g[i] = grad[i]
-
-		print "Params", p
-		print "grad:", g
-
-		return 
 
 	
 	def write_ghs_extract_with_logpostval(self, ndim, x, logpostval, grad):
@@ -3749,13 +4171,14 @@ class Likelihood(object):
 	
 		#for i in range(ndim[0]):
 		#	self.GHSoutfile.write(str(params[i])+" ")
+		#print(logpostval[0])
 		
 		self.GHSoutfile.write(str(logpostval[0])+"\n")      
 		
 		return
 
 	def callGHS(self, resume=False, nburn = 100, nsamp = 100, feedback_int = 100, seed = -1,  max_steps = 10, dim_scale_fact = 0.4):
-
+		filelog=open("log.out", "a")
 		if(resume == 0):
 			self.GHSoutfile = open(self.root+"extract.dat", "w")
 		else:
@@ -3788,11 +4211,12 @@ class Likelihood(object):
 			
 			self.GHSoutfile.close()
 			stop=time.time()
+			filelog.write("time:\t"+str(stop-start)+" s")
 			print "GHS GPU run time: ", stop-start
 	
 		else:
 			start = time.time()
-                        ghs.run_guided_hmc(self.GHSCPULike,
+                        ghs.run_guided_hmc(self.GHSCPULikes,
                                         self.write_ghs_extract_with_logpostval,
                                         self.n_params,
                                         self.startPoint.astype(np.float64),
@@ -3809,8 +4233,8 @@ class Likelihood(object):
                  
                         self.GHSoutfile.close()
                         stop=time.time()
+                        filelog.write("time:\t"+str(stop-start)+" s")
                         print "GHS CPU run time: ", stop-start
-
 
 
 
@@ -4771,3 +5195,436 @@ class Likelihood(object):
 				index2 = self.ParamDict[key1][3]
 				print "Updating from chains:", k1, key1, index1, index2
 				self.MLParameters[self.ParamDict[key1][2]] = ML[index2:index2+Np1]	
+
+	def CPULike(self, ndim, params):
+
+		like = 0
+		NCoeff = self.TotCoeff-1
+		grad = np.zeros(ndim)
+
+		DenseParams = self.DenseParams
+		if(self.incBaselineNoise == True):
+			self.BLNHess = np.zeros([self.NToAs, self.BaselineNoiseParams, self.BaselineNoiseParams])
+			self.BLNEigM = np.zeros([self.NToAs, self.BaselineNoiseParams, self.BaselineNoiseParams])
+
+		LinearSize = self.LinearParams
+	 ####################Get Parameters####################################
+		if(self.incPAmps == True):
+			if self.fitPAmps==True:
+				index = self.ParamDict['PAmps'][0]
+				ProfileAmps = params[index:index+self.NToAs]
+			else:
+				ProfileAmps = self.MLParameters[self.ParamDict['PAmps'][2]]
+
+		if(self.incPNoise == True):
+			if self.fitPNoise==True:
+				index = self.ParamDict['PNoise'][0]
+				ProfileNoise = params[index:index+self.NToAs]*params[index:index+self.NToAs]
+			else:
+				ProfileNoise = self.MLParameters[self.ParamDict['PNoise'][2]]*self.MLParameters[self.ParamDict['PNoise'][2]]
+
+		if(self.incPhase == True):
+			if self.fitPhase==True:
+				index = self.ParamDict['Phase'][0]
+				Phase = params[index]
+				Phaseprior = 0.5 * (Phase - self.MeanPhase)**2 / self.PhasePrior / self.PhasePrior
+				PhasePriorGrad = (Phase-self.MeanPhase)/self.PhasePrior/self.PhasePrior
+			else:
+				Phase = self.MLParameters[self.ParamDict['Phase'][2]][0]
+				Phaseprior = 0
+				PhasePriorGrad = 0
+
+		if(self.incLinearTM == True):
+			if self.fitLinearTM==True:
+				if len(params) == self.numTime:
+					TimingParameters = params
+				else:
+					index = self.ParamDict['LinearTM'][0]
+					TimingParameters = params[index:index+self.numTime]
+			else:
+				TimingParameters = self.MLParameters[self.ParamDict['LinearTM'][2]]
+		TimeSignal = np.dot(self.designMatrix, TimingParameters)
+	
+		
+		if(self.incProfile == True):
+			ShapeAmps=np.zeros([self.TotCoeff, self.EvoNPoly+1])
+			ShapeAmps[0][0] = 1
+			if self.fitProfile==True:
+				index = self.ParamDict['Profile'][0]
+				ShapeAmps[1:] = params[index:index+NCoeff*(self.EvoNPoly+1)].reshape([NCoeff,(self.EvoNPoly+1)])
+			else:
+				ShapeAmps[1:] = self.MLParameters[self.ParamDict['Profile'][2]].reshape([NCoeff,(self.EvoNPoly+1)])
+		
+		JitterSignal = np.zeros(self.NToAs)
+		if(self.incEQUAD == True):
+			if self.fitEQUADPrior==True:
+				index = self.ParamDict['EQUADPrior'][0]
+				EQUADPriors = np.copy(params[index:index+self.NumEQPriors])
+				for i in range(self.NumEQPriors):
+					if EQUADPriors[i] < -10:
+						like += - np.log(10.0) *  (EQUADPriors[i]+10)
+						grad[i+index] += -np.log(10.0)
+			else:
+				EQUADPriors = copy.copy(self.MLParameters[self.ParamDict['EQUADPrior'][2]])
+			EQUADPriors = 10.0**EQUADPriors
+
+			if self.fitEQUADSignal==True:
+				index = self.ParamDict['EQUADSignal'][0]
+				EQUADSignal = params[index:index+self.NToAs]
+			else:
+				EQUADSignal = self.MLParameters[self.ParamDict['EQUADSignal'][2]]
+			for i in range(self.NumEQPriors):
+					EQIndicies = np.where(self.EQUADInfo==i)[0]
+					Prior =EQUADPriors[i]
+					if self.EQUADModel[i]==-1 or self.EQUADModel[i]==0:
+						like += 0.5 * np.sum(EQUADSignal[EQIndicies]**2)
+						grad[EQIndicies+index] += EQUADSignal[EQIndicies]
+						EQUADSignal[EQIndicies] *= Prior
+					elif self.EQUADModel[i]==1:
+						like += 0.5 * np.sum(EQUADSignal[EQIndicies]**2) / Prior / Prior + 0.5 *len(EQIndicies) *  np.log(Prior**2)
+						grad[EQIndicies+index] += EQUADSignal[EQIndicies]/Prior/Prior
+			JitterSignal += EQUADSignal
+
+		if(self.incECORR == True):
+			if self.fitECORRPrior==True:
+				index = self.ParamDict['ECORRPrior'][0]
+				ECORRPrior = params[index:index+self.NumECORRPriors]
+				for i in range(self.NumECORRPriors):
+					if ECORRPriors[i]<-10:
+						like += - np.log(10.0) * (ECORRPriors[i] + 10.)
+						grad[i+index] += -np.log(10.0)
+			else:
+				ECORRPriors = copy.copy(self.MLParameters[self.ParamDict['ECORRPriors'][2]])
+			ECORRPriors = 10.0**ECORRPriors
+
+			if self.fitECORRSignal==True:
+				index = self.ParamDict['ECORRSignal'][0]
+				ECORRSignal = params[index:index+self.NumEpochs]
+			else:
+				ECORRSignal = copy.copy(self.MLParameters[self.ParamDict['ECORRSignal'][2]])
+			for i in range(self.NumEpochs):
+				ECORRIndicies = np.where(self.ECORRInfo==i)
+				Prior = ECORRPrior[i]
+				if self.ECORRModel[i]==-1 or self.ECORRModel[i]==0:
+					like += 0.5 * np.sum(ECORRSignal[ECORRIndicies]**2)
+					grad[ECORRIndicies+index] += ECORRSignal[ECORRIndicies]
+					ECORRSignal[ECORRIndicies] *= Prior 
+				elif self.ECORRModel[i]==1:
+					like += 0.5 * np.sum(ECORRSignal[ECORRIndicies]**2) / Prior / Prior + 0.5 * len(ECORRIndicies) * np.log(Prior**2)
+					grad[ECORRIndicies+index] += ECORRSignal[ECORRIndicies]/Prior/Prior
+			JitterSignal += ECORRSignal[self.EpochIndex]
+
+		if(self.incScatter == True):
+			if self.fitScatter==True:
+				index = self.ParamDict['Scattering'][0]
+				ScatteringParameters = params[index:index+self.NScatterEpochs]
+				if self.fitScatterPrior==0:
+					for i in range(self.NScatterEpochs):
+						if ScatteringParameters[i]<-6:
+							like += -np.log(10.0) * (ScatteringParameters[i] + 6)
+							grad[i+index] += -np.log(10.0)
+				elif self.fitScatterPrior==1:
+					for i in range(self.NScatterEpochs):
+							like += -np.log(10.0) * (ScatteringParameters[i])
+							grad[i+index] += -np.log(10.0)
+				ScatteringParameters = 10.0**ScatteringParameters
+			else:
+				ScatteringParameters = 10.0**self.MLParameters[self.ParamDict['Scattering'][2]]
+
+			if self.fitScatterFreqScale==True:
+				index = self.ParamDict['ScatterFreqScale'][0]
+				ScatterFreqScale = params[index]
+			else:
+				ScatterFreqScale = self.MLParameters[self.ParamDict['ScatterFreqScale'][2]]
+			
+		if(self.incBaselineNoise == True):
+			if self.fitBaselineNoiseAmpPrior==True:
+				index = self.ParamDict['BaselineNoiseAmpPrior'][0]
+				BaselineNoisePriorAmps = params[index:index+self.NToAs]
+				for i in range(self.NToAs):
+					if BaselineNoisePriorAmps[i]<-10 or self.BaselineNoisePrior[i]==1 or self.FIndML==True:
+						like += - np.log(10.0) * (BaselineNoisePriorAmps[i] + 10.0)
+						grad[i+index] += -np.log(10.0)
+			else:
+				BaselineNoisePriorAmps  = copy.copy(self.MLParameters[self.ParamDict['BaselineNoiseAmpPrior'][2]])
+			if self.fitBaselineNoiseSpecPrior==True:
+				index = self.ParamDict['BaselineNoiseSpecPrior'][0]
+				BaselineNoisePriorSpecs = params[index:index+self.NToAs]
+				for i in range(self.NToAs):
+					if BaselineNoisePriorSpecs[i]<-7:
+						like += - (BaselineNoisePriorSpecs[i] + 7)
+						grad[i+index] += -1
+					elif BaselineNoisePriorSpecs[i] > 10:
+						like += - (BaselineNoisePriorSpecs[i] -10)
+						grad[i+index] += 1
+			else:
+				BaselineNoisePriorSpecs  = copy.copy(self.MLParameters[self.ParamDict['BaselineNoiseSpecPrior'][2]])
+
+		#phase offset 
+		xS = self.ShiftedBinTimes - Phase * self.FoldingPeriods - TimeSignal - JitterSignal + self.FoldingPeriods / 2 
+		xS = (xS % self.FoldingPeriods) - self.FoldingPeriods * 0.5
+		OneBin = self.FoldingPeriods/self.Nbins
+		InterpSize = np.shape(self.InterpFBasis)[0]
+		InterpBins = (np.floor(-xS % (OneBin) / self.InterpolatedTime + 0.5)).astype(int)%InterpSize
+		WBTs = xS + self.InterpolatedTime * (InterpBins - 1)
+		RollBins = (np.floor(WBTs / OneBin + 0.5 )).astype(np.int)
+		OneFBasis = self.InterpFBasis[InterpBins]
+		OneJBasis = self.InterpJBasis[InterpBins]
+
+		ssbfreqs = self.psr.ssbfreqs()/10.0**6
+		s = np.sum([np.dot(OneFBasis, ShapeAmps[:,i])*(((self.psr.ssbfreqs()/10.0**6 - self.EvoRefFreq)/1000.0)**i).reshape(self.NToAs,1) for i in range(self.EvoNPoly+1)], axis=0)	
+		j = np.sum([np.dot(OneJBasis, ShapeAmps[:,i])*(((self.psr.ssbfreqs()/10.0**6 - self.EvoRefFreq)/1000.0)**i).reshape(self.NToAs,1) for i in range(self.EvoNPoly+1)], axis=0)
+
+		like = 0
+		chisq = 0
+		detN = 0
+
+		for i in range(self.NToAs):
+
+			rfftfreqs = np.linspace(1,self.NFBasis,self.NFBasis)/self.Nbins[i]
+			RealRoll = np.cos(-2*np.pi*RollBins[i]*rfftfreqs)
+			ImagRoll = np.sin(-2*np.pi*RollBins[i]*rfftfreqs)
+			RollData = np.zeros(2*self.NFBasis)
+			RollData[:self.NFBasis] = RealRoll*self.ProfileFData[i][:self.NFBasis]-ImagRoll*self.ProfileFData[i][self.NFBasis:]
+			RollData[self.NFBasis:] = ImagRoll*self.ProfileFData[i][:self.NFBasis]+RealRoll*self.ProfileFData[i][self.NFBasis:]
+			if(self.NScatterEpochs > 0):
+				NoScatterS = copy.copy(s[i])
+				tau = np.sum(ScatteringParameters[self.ScatterInfo[i]])
+				f = np.linspace(1,self.NFBasis,self.NFBasis)/self.FoldingPeriods[i]
+				w = 2.0*np.pi*f
+				ISS = 1.0 / (self.psr.ssbfreqs()[i]**ScatterFreqScale / self.ScatterRefFreq**(ScatterFreqScale))
+				ISS2 = 1.0/(self.psr.ssbfreqs()[i]**ScatterFreqScale/10.0**(9.0*ScatterFreqScale))
+
+				RConv, IConv = self.ConvolveExp(f, tau*ISS)
+				RConfProf = RConv*s[i][:self.NFBasis] - IConv*s[i][self.NFBasis:]
+				IConfProf = IConv*s[i][:self.NFBasis] + RConv*s[i][self.NFBasis:]
+
+				s[i][:self.NFBasis] = RConfProf
+				s[i][self.NFBasis:] = IConfProf
+
+				RConfProf = RConv*j[i][:self.NFBasis] - IConv*j[i][self.NFBasis:]
+				IConfProf = IConv*j[i][:self.NFBasis] + RConv*j[i][self.NFBasis:]
+
+				j[i][:self.NFBasis] = RConfProf
+				j[i][self.NFBasis:] = IConfProf
+
+				RBasis = (RConv*OneFBasis[i,:self.NFBasis,:].T - IConv*OneFBasis[i,self.NFBasis:,:].T).T
+				IBasis = (IConv*OneFBasis[i,:self.NFBasis,:].T + RConv*OneFBasis[i,self.NFBasis:,:].T).T 
+
+				OneFBasis[i,:self.NFBasis,:] = RBasis
+				OneFBasis[i,self.NFBasis:,:] = IBasis
+			
+			#TODO : move this elsewhere
+			if(ProfileAmps[i] == None):
+				MNM = np.dot(s[i], s[i])
+				dNM = np.dot(RollData, s[i])
+				MLAmp = dNM/MNM
+				self.MLParameters[self.ParamDict['PAmps'][2]][i] = MLAmp
+			else:
+				MLAmp = ProfileAmps[i]
+			if(ProfileNoise[i] == None):
+				Noise =  np.std(Res)**2
+				self.MLParameters[self.ParamDict['PNoise'][2]][i] = MLSigma
+			else:
+				Noise = ProfileNoise[i]
+
+			PSignal = MLAmp * s[i]
+			Res = RollData - PSignal
+
+			if(self.incBaselineNoise == True):
+				Amp = 10.0**( 2 * BaselineNoisePriorAmps[i])
+				Spec = BaselineNoisePriorSpecs[i]
+				BLRefF = self.BaselineNoiseRefFreq
+				BLNFreqs = np.zeros(2*self.NFBasis)
+				BLNFreqs[:self.NFBasis] = (np.linspace(1,self.NFBasis,self.NFBasis)/BLRefF)
+				BLNFreqs[self.NFBasis:] = (np.linspace(1,self.NFBasis,self.NFBasis)/BLRefF)
+				BLNPower = Amp * np.pow(BLNFreqs, -Spec)
+				BLNPower[self.NFBasis-5:self.NFBasis] = 0
+				BLNPower[-5:] = 0
+				Noise += BLNPower
+			chisq = np.sum((Res * Res)/ Noise)
+			like += 0.5*np.sum((Res * Res) / Noise) + 0.5  * np.sum(np.log(Noise)) * 2 *self.NFBasis
+
+			#Gradient SCattering
+			if self.fitScatter == True:
+				for c in range(self.NScatterEpochs):
+					if c in self.ScatterInfo[i]:
+						tau = ScatteringParameters[c]
+						f = np.linspace(1,self.NFBasis,self.NFBasis)/self.FoldingPeriods[i]
+						w = 2.0*np.pi*f
+						ISS = 1.0/(self.psr.ssbfreqs()[i]**ScatterFreqScale/self.ScatterRefFreq**(ScatterFreqScale))
+						ISS2 = 1.0/(self.psr.ssbfreqs()[i]**ScatterFreqScale/10.0**(9.0*ScatterFreqScale))
+						RConv, IConv = self.ConvolveExp(f, tau*ISS)
+
+						RProf = NoScatterS[:self.NFBasis]*MLAmp
+						IProf = NoScatterS[self.NFBasis:]*MLAmp
+
+						RConfProf = RConv*RProf - IConv*IProf
+						IConfProf = IConv*RProf + RConv*IProf
+						pnoise = np.sqrt(Noise)[:self.NFBasis]
+						GradDenom = 1.0/(1.0 + tau**2*w**2*ISS**2)**2
+
+						RealGrad = 2*tau**2*ISS**2*w**2*np.log(10.0)*GradDenom*RProf + tau*ISS*w*(tau**2*ISS**2*w**2 - 1)*np.log(10.0)*GradDenom*IProf
+						ImagGrad = 2*tau**2*ISS**2*w**2*np.log(10.0)*GradDenom*IProf - tau*ISS*w*(tau**2*ISS**2*w**2 - 1)*np.log(10.0)*GradDenom*RProf
+
+						profgrad = np.zeros(2*self.NFBasis)
+						profgrad[:self.NFBasis] = RealGrad*(1.0/pnoise)
+						profgrad[self.NFBasis:] = ImagGrad*(1.0/pnoise)
+						for c in range(self.TotCoeff):
+							RProf = InterpBasis[InterpBins[i]*2*NFBasis*TotCoeff + (i-ToA_Index*NFBasis)*TotCoeff + c]
+							IProf = InterpBasis[InterpBins[i]*2*NFBasis*TotCoeff + NFBasis*TotCoeff + (i-ToA_Index*NFBasis)*TotCoeff + c]
+				
+							RConfProf = RConv*RProf - IConv*IProf
+							IConfProf = IConv*RProf + RConv*IProf			
+				
+							ScatterBasis[RSignal_Index*TotCoeff+c] = RConfProf
+							ScatterBasis[ISignal_Index*TotCoeff+c] = IConfProf
+				SGrad= np.dot(profgrad, Res)
+				index=self.ParamDict['Scattering'][0]
+				for c in range(self.NScatterEpochs):
+					grad[index+c] = np.sum(SGrads[self.ScatterInfo[:,0]==c])
+				if self.fitScatterFreqScale==True:
+					index=self.ParamDict['ScatterFreqScale'][0]
+					grad[index] = np.sum(-1*SGrads*np.log(self.SSBFreqs/self.ScatterRefFreq)/np.log(10))
+
+			#BaselineNOise gradient
+			if self.fitBaselineNoiseSpecPrior==True or self.fitBaselineNoiseAmpPrior==True:
+				Top = np.log(10.0) * BLNPower
+				if self.BaselineNoiseAmpPrior==True:
+					AmpGrad += np.sum((Top/(BLNPower + ProfileNoise[i]))*(1 - Res*Res/Noise))
+					index=self.ParamDict['BaselineNoiseAmpPrior'][0]
+					grad[index+i] = AmpGrad
+				if self.BaselineNoiseSpecPrior==True:
+					SpecGrad += np.sum((Top/(BLNPower + ProfileNoise[i]))*(1 - Res*Res/Noise))
+					index=self.ParamDict['BaselineNoiseSpecPrior'][0]
+					grad[index+i] = SpecGrad
+
+			#Noise gradient
+			if self.fitPNoise==True:
+				index=self.ParamDict['PNoise'][0]
+				if(self.incBaselineNoise == False):
+					grad[index+i] = (-chisq+2*self.NFBasis)/np.sqrt(ProfileNoise[i])
+				else:
+					grad[index+i] = ProfileNoise[i]
+
+			#Amp gradient
+			if(self.fitPAmps == True):
+				index=self.ParamDict['PAmps'][0]
+				grad[index+i] = -1 * np.dot(s[i],Res) / ProfileNoise[i]
+
+			#Phase offset gradient
+			Jgrad = np.dot(j[i], Res/Noise) * ProfileAmps[i]
+			if self.fitPhase:
+				index = self.ParamDict['Phase'][0]
+				grad[index] += Jgrad * self.ReferencePeriod
+
+
+			#Timing model gradient
+			if self.fitLinearTM == True:
+				index = self.ParamDict['LinearTM'][0]
+				TimeGrad = 	(Jgrad * self.designMatrix[i])
+				grad[index:index+self.numTime] += TimeGrad
+				
+			#Profile and evolution profile gradient
+			if self.fitProfile==True:
+				ShapeBasis = OneFBasis[i].T
+				if self.incScatter==True:
+					Shapegrad = np.dot(Res,Res)/Noise
+				else:
+					Shapegrad = np.dot(ShapeBasis, Res) /Noise
+				index = self.ParamDict['Profile'][0]
+				fvals = ((self.psr.freqs[i] - self.EvoRefFreq)/1000.0)**np.arange(0,self.EvoNPoly+1)
+				for c in range(1,self.TotCoeff):
+					for p in range(self.EvoNPoly+1):
+						tmpgrad = -1 * fvals[p] * Shapegrad[c] * ProfileAmps[i]
+						grad[index] += tmpgrad
+						index += 1
+			#EQUAD gradient
+			if(self.fitEQUADSignal == True):
+				index=self.ParamDict['EQUADSignal'][0]
+				for i in range(self.NumEQPriors):
+					EQIndicies = np.where(self.EQUADInfo==i)[0]
+					Prior = EQUADPriors[i]
+					if(self.EQUADModel[i] == -1 or self.EQUADModel[i] == 0):
+						grad[EQIndicies+index] += JGrad[EQIndicies]*Prior
+
+					if(self.EQUADModel[i] == 1):
+						grad[EQIndicies+index] += JGrad[EQIndicies]
+
+			if(self.fitEQUADPrior == True):
+				index=self.ParamDict['EQUADPrior'][0]
+				for i in range(self.NumEQPriors):
+					EQIndicies = np.where(self.EQUADInfo==i)[0]
+					NumCorrs = len(EQIndicies)
+					Prior = EQUADPriors[i]
+
+					if(self.EQUADModel[i] == -1 or self.EQUADModel[i] == 0):
+						grad[i+index] += np.log(10.0)*np.sum(JGrad[EQIndicies]*EQUADSignal[EQIndicies])
+
+					if(self.EQUADModel[i] == 1):
+						grad[i+index] += np.log(10.0)*(EQIndicies - np.sum(EQUADSignal[EQIndicies]*EQUADSignal[EQIndicies])/Prior/Prior)			
+
+
+			#ECCOR gradient
+			if(self.fitECORRSignal == True or self.fitECORRPrior == True):
+				ECORRGradVec = np.array([np.sum(JGradVec[self.ChansPerEpoch[i]]) for i in range(self.NumEpochs)])
+
+				if(self.fitECORRSignal == True):
+					index=self.ParamDict['ECORRSignal'][0]
+					for i in range(self.NumECORRPriors):
+						ECORRIndicies = np.where(self.ECORRInfo==i)[0]
+						Prior = ECORRPriors[i]
+
+						if(self.ECORRModel[i] == -1 or self.ECORRModel[i] == 0):
+							grad[ECORRIndicies+index] += ECORRGradVec[ECORRIndicies]*Prior
+
+						if(self.ECORRModel[i] == 1):
+							grad[ECORRIndicies+index] += ECORRGradVec[ECORRIndicies]
+
+				if(self.fitECORRPrior == True):
+					index2=self.ParamDict['ECORRPrior'][0]
+					for i in range(self.NumECORRPriors):
+						ECORRIndicies = np.where(self.ECORRInfo==i)[0]
+						NumCorrs = len(ECORRIndicies)
+						Prior = ECORRPriors[i]
+		
+						if(self.ECORRModel[i] == -1 or self.ECORRModel[i] == 0):
+							grad[i+index2] += np.log(10.0)*np.sum(ECORRGradVec[ECORRIndicies]*ECORRSignal[ECORRIndicies])
+
+						if(self.ECORRModel[i] == 1):
+							grad[i+index2] += np.log(10.0)*(NumCorrs - np.sum(ECORRSignal[ECORRIndicies]*ECORRSignal[ECORRIndicies])/Prior/Prior)
+
+
+		if(self.fitPhase == True):
+			like += Phaseprior
+			index = self.ParamDict['Phase'][0]
+			grad[index] += PhasePriorGrad
+		return like, grad
+
+	def GHSCPULike(self, ndim, x, like, g):
+		params = copy.copy(np.ctypeslib.as_array(x, shape=(ndim[0],)))
+		ndims = ndim[0]
+		if self.BaselineNoiseParams>0:
+			for i in range(self.NToAs):
+				DenseParams = params[self.BLNList[i]]
+				PhysParams = np.dot(self.BLNEigM[i], DenseParams)
+				params[self.BLNList[i]] = PhysParams
+		if self.DiagParams<ndims:
+			DenseParams = params[self.DiagParams:]
+			PhysParams = np.dot(self.EigM, DenseParams)
+			params[self.DiagParams:] = PhysParams
+
+		likeval, grad = self.CPULike(ndims, params)
+
+		if self.BaselineNoiseParams>0:
+			for i in range(self.NToAs):
+				DenseGrad = copy.copy(grad[self.BLNList[i]])
+				PhysGrad = np.dot(self.BLNEigM[i].T, DenseGrad)
+				grad[self.BLNList[i]] = PhysGrad
+		if self.DiagParams<ndims:
+			DenseGrad = grad[self.DiagParams:]
+			PhysGrad = np.dot(self.EigM.T, DenseGrad)
+			grad[self.DiagParams:] = PhysGrad
+		for i in range(ndims):
+			g[i] = grad[i]
+		like[0] = likeval
