@@ -4932,3 +4932,269 @@ class Likelihood(object):
 		for i in range(ndims):
 			g[i] = grad[i]
 		like[0] = likeval
+
+	def likelihood_sampler(self, Jitter=False, Width=False, ProfileVar=False):
+		like = 0
+		NCoeff = self.TotCoeff-1
+		LinearSize = self.LinearParams
+		Nc = self.TScrunchChans
+		Nb = self.NBins
+		linearcount = 0
+
+
+
+		DenseParams = self.DenseParams
+		if(self.incBaselineNoise == True):
+			self.BLNHess = np.zeros([self.NToAs, self.BaselineNoiseParams, self.BaselineNoiseParams])
+			self.BLNEigM = np.zeros([self.NToAs, self.BaselineNoiseParams, self.BaselineNoiseParams])
+
+
+	 ####################Get Parameters####################################
+		if(self.incPAmps == True):
+			if self.fitPAmps==True:
+				index = self.ParamDict['PAmps'][0]
+				ProfileAmps = params[index:index+self.NToAs]
+			else:
+				ProfileAmps = self.MLParameters[self.ParamDict['PAmps'][2]]
+
+		if(self.incPNoise == True):
+			if self.fitPNoise==True:
+				index = self.ParamDict['PNoise'][0]
+				ProfileNoise = params[index:index+self.NToAs]*params[index:index+self.NToAs]
+			else:
+				ProfileNoise = self.MLParameters[self.ParamDict['PNoise'][2]]*self.MLParameters[self.ParamDict['PNoise'][2]]
+
+		if(self.incPhase == True):
+			if self.fitPhase==True:
+				index = self.ParamDict['Phase'][0]
+				Phase = params[index]
+				Phaseprior = 0.5 * (Phase - self.MeanPhase)**2 / self.PhasePrior / self.PhasePrior
+				PhasePriorGrad = (Phase-self.MeanPhase)/self.PhasePrior/self.PhasePrior
+			else:
+				Phase = self.MLParameters[self.ParamDict['Phase'][2]][0]
+				Phaseprior = 0
+				PhasePriorGrad = 0
+
+		if(self.incLinearTM == True):
+			if self.fitLinearTM==True:
+				if len(params) == self.numTime:
+					TimingParameters = params
+				else:
+					index = self.ParamDict['LinearTM'][0]
+					TimingParameters = params[index:index+self.numTime]
+			else:
+				TimingParameters = self.MLParameters[self.ParamDict['LinearTM'][2]]
+		TimeSignal = np.dot(self.designMatrix, TimingParameters)
+
+
+		if(self.incProfile == True):
+			ShapeAmps=np.zeros([self.TotCoeff, self.EvoNPoly+1])
+			ShapeAmps[0][0] = 1
+			if self.fitProfile==True:
+				index = self.ParamDict['Profile'][0]
+				ShapeAmps[1:] = params[index:index+NCoeff*(self.EvoNPoly+1)].reshape([NCoeff,(self.EvoNPoly+1)])
+			else:
+				ShapeAmps[1:] = self.MLParameters[self.ParamDict['Profile'][2]].reshape([NCoeff,(self.EvoNPoly+1)])
+
+		JitterSignal = np.zeros(self.NToAs)
+		if(self.incEQUAD == True):
+			if self.fitEQUADPrior==True:
+				index = self.ParamDict['EQUADPrior'][0]
+				EQUADPriors = np.copy(params[index:index+self.NumEQPriors])
+				for i in range(self.NumEQPriors):
+					if EQUADPriors[i] < -10:
+						like += - np.log(10.0) *  (EQUADPriors[i]+10)
+						grad[i+index] += -np.log(10.0)
+			else:
+				EQUADPriors = copy.copy(self.MLParameters[self.ParamDict['EQUADPrior'][2]])
+			EQUADPriors = 10.0**EQUADPriors
+
+			if self.fitEQUADSignal==True:
+				index = self.ParamDict['EQUADSignal'][0]
+				EQUADSignal = params[index:index+self.NToAs]
+			else:
+				EQUADSignal = self.MLParameters[self.ParamDict['EQUADSignal'][2]]
+			for i in range(self.NumEQPriors):
+					EQIndicies = np.where(self.EQUADInfo==i)[0]
+					Prior =EQUADPriors[i]
+					if self.EQUADModel[i]==-1 or self.EQUADModel[i]==0:
+						like += 0.5 * np.sum(EQUADSignal[EQIndicies]**2)
+						grad[EQIndicies+index] += EQUADSignal[EQIndicies]
+						EQUADSignal[EQIndicies] *= Prior
+					elif self.EQUADModel[i]==1:
+						like += 0.5 * np.sum(EQUADSignal[EQIndicies]**2) / Prior / Prior + 0.5 *len(EQIndicies) *  np.log(Prior**2)
+						grad[EQIndicies+index] += EQUADSignal[EQIndicies]/Prior/Prior
+			JitterSignal += EQUADSignal
+
+		if(self.incECORR == True):
+			if self.fitECORRPrior==True:
+				index = self.ParamDict['ECORRPrior'][0]
+				ECORRPrior = params[index:index+self.NumECORRPriors]
+				for i in range(self.NumECORRPriors):
+					if ECORRPriors[i]<-10:
+						like += - np.log(10.0) * (ECORRPriors[i] + 10.)
+						grad[i+index] += -np.log(10.0)
+			else:
+				ECORRPriors = copy.copy(self.MLParameters[self.ParamDict['ECORRPriors'][2]])
+			ECORRPriors = 10.0**ECORRPriors
+
+			if self.fitECORRSignal==True:
+				index = self.ParamDict['ECORRSignal'][0]
+				ECORRSignal = params[index:index+self.NumEpochs]
+			else:
+				ECORRSignal = copy.copy(self.MLParameters[self.ParamDict['ECORRSignal'][2]])
+			for i in range(self.NumEpochs):
+				ECORRIndicies = np.where(self.ECORRInfo==i)
+				Prior = ECORRPrior[i]
+				if self.ECORRModel[i]==-1 or self.ECORRModel[i]==0:
+					like += 0.5 * np.sum(ECORRSignal[ECORRIndicies]**2)
+					grad[ECORRIndicies+index] += ECORRSignal[ECORRIndicies]
+					ECORRSignal[ECORRIndicies] *= Prior
+				elif self.ECORRModel[i]==1:
+					like += 0.5 * np.sum(ECORRSignal[ECORRIndicies]**2) / Prior / Prior + 0.5 * len(ECORRIndicies) * np.log(Prior**2)
+					grad[ECORRIndicies+index] += ECORRSignal[ECORRIndicies]/Prior/Prior
+			JitterSignal += ECORRSignal[self.EpochIndex]
+
+		if(self.incScatter == True):
+			if self.fitScatter==True:
+				index = self.ParamDict['Scattering'][0]
+				ScatteringParameters = params[index:index+self.NScatterEpochs]
+				if self.fitScatterPrior==0:
+					for i in range(self.NScatterEpochs):
+						if ScatteringParameters[i]<-6:
+							like += -np.log(10.0) * (ScatteringParameters[i] + 6)
+							grad[i+index] += -np.log(10.0)
+				elif self.fitScatterPrior==1:
+					for i in range(self.NScatterEpochs):
+							like += -np.log(10.0) * (ScatteringParameters[i])
+							grad[i+index] += -np.log(10.0)
+				ScatteringParameters = 10.0**ScatteringParameters
+			else:
+				ScatteringParameters = 10.0**self.MLParameters[self.ParamDict['Scattering'][2]]
+
+			if self.fitScatterFreqScale==True:
+				index = self.ParamDict['ScatterFreqScale'][0]
+				ScatterFreqScale = params[index]
+			else:
+				ScatterFreqScale = self.MLParameters[self.ParamDict['ScatterFreqScale'][2]]
+
+		if(self.incBaselineNoise == True):
+			if self.fitBaselineNoiseAmpPrior==True:
+				index = self.ParamDict['BaselineNoiseAmpPrior'][0]
+				BaselineNoisePriorAmps = params[index:index+self.NToAs]
+				for i in range(self.NToAs):
+					if BaselineNoisePriorAmps[i]<-10 or self.BaselineNoisePrior[i]==1 or self.FIndML==True:
+						like += - np.log(10.0) * (BaselineNoisePriorAmps[i] + 10.0)
+						grad[i+index] += -np.log(10.0)
+			else:
+				BaselineNoisePriorAmps  = copy.copy(self.MLParameters[self.ParamDict['BaselineNoiseAmpPrior'][2]])
+			if self.fitBaselineNoiseSpecPrior==True:
+				index = self.ParamDict['BaselineNoiseSpecPrior'][0]
+				BaselineNoisePriorSpecs = params[index:index+self.NToAs]
+				for i in range(self.NToAs):
+					if BaselineNoisePriorSpecs[i]<-7:
+						like += - (BaselineNoisePriorSpecs[i] + 7)
+						grad[i+index] += -1
+					elif BaselineNoisePriorSpecs[i] > 10:
+						like += - (BaselineNoisePriorSpecs[i] -10)
+						grad[i+index] += 1
+			else:
+				BaselineNoisePriorSpecs  = copy.copy(self.MLParameters[self.ParamDict['BaselineNoiseSpecPrior'][2]])
+
+		#phase offset
+		xS = self.ShiftedBinTimes - Phase * self.FoldingPeriods - TimeSignal - JitterSignal + self.FoldingPeriods / 2
+		xS = (xS % self.FoldingPeriods) - self.FoldingPeriods * 0.5
+		OneBin = self.FoldingPeriods/self.Nbins
+		InterpSize = np.shape(self.InterpFBasis)[0]
+		InterpBins = (np.floor(-xS % (OneBin) / self.InterpolatedTime + 0.5)).astype(int)%InterpSize
+		WBTs = xS + self.InterpolatedTime * (InterpBins - 1)
+		RollBins = (np.floor(WBTs / OneBin + 0.5 )).astype(np.int)
+		OneFBasis = self.InterpFBasis[InterpBins]
+		OneJBasis = self.InterpJBasis[InterpBins]
+
+		ssbfreqs = self.psr.ssbfreqs()/10.0**6
+		s = np.sum([np.dot(OneFBasis, ShapeAmps[:,i])*(((self.psr.ssbfreqs()/10.0**6 - self.EvoRefFreq)/1000.0)**i).reshape(self.NToAs,1) for i in range(self.EvoNPoly+1)], axis=0)
+		j = np.sum([np.dot(OneJBasis, ShapeAmps[:,i])*(((self.psr.ssbfreqs()/10.0**6 - self.EvoRefFreq)/1000.0)**i).reshape(self.NToAs,1) for i in range(self.EvoNPoly+1)], axis=0)
+
+		like = 0
+		chisq = 0
+		detN = 0
+
+		for i in range(self.NToAs):
+
+			rfftfreqs = np.linspace(1,self.NFBasis,self.NFBasis)/self.Nbins[i]
+			RealRoll = np.cos(-2*np.pi*RollBins[i]*rfftfreqs)
+			ImagRoll = np.sin(-2*np.pi*RollBins[i]*rfftfreqs)
+			RollData = np.zeros(2*self.NFBasis)
+			RollData[:self.NFBasis] = RealRoll*self.ProfileFData[i][:self.NFBasis]-ImagRoll*self.ProfileFData[i][self.NFBasis:]
+			RollData[self.NFBasis:] = ImagRoll*self.ProfileFData[i][:self.NFBasis]+RealRoll*self.ProfileFData[i][self.NFBasis:]
+			if(self.NScatterEpochs > 0):
+				NoScatterS = copy.copy(s[i])
+				tau = np.sum(ScatteringParameters[self.ScatterInfo[i]])
+				f = np.linspace(1,self.NFBasis,self.NFBasis)/self.FoldingPeriods[i]
+				w = 2.0*np.pi*f
+				ISS = 1.0 / (self.psr.ssbfreqs()[i]**ScatterFreqScale / self.ScatterRefFreq**(ScatterFreqScale))
+				ISS2 = 1.0/(self.psr.ssbfreqs()[i]**ScatterFreqScale/10.0**(9.0*ScatterFreqScale))
+
+				RConv, IConv = self.ConvolveExp(f, tau*ISS)
+				RConfProf = RConv*s[i][:self.NFBasis] - IConv*s[i][self.NFBasis:]
+				IConfProf = IConv*s[i][:self.NFBasis] + RConv*s[i][self.NFBasis:]
+
+				s[i][:self.NFBasis] = RConfProf
+				s[i][self.NFBasis:] = IConfProf
+
+				RConfProf = RConv*j[i][:self.NFBasis] - IConv*j[i][self.NFBasis:]
+				IConfProf = IConv*j[i][:self.NFBasis] + RConv*j[i][self.NFBasis:]
+
+				j[i][:self.NFBasis] = RConfProf
+				j[i][self.NFBasis:] = IConfProf
+
+				RBasis = (RConv*OneFBasis[i,:self.NFBasis,:].T - IConv*OneFBasis[i,self.NFBasis:,:].T).T
+				IBasis = (IConv*OneFBasis[i,:self.NFBasis,:].T + RConv*OneFBasis[i,self.NFBasis:,:].T).T
+
+				OneFBasis[i,:self.NFBasis,:] = RBasis
+				OneFBasis[i,self.NFBasis:,:] = IBasis
+
+			#TODO : move this elsewhere
+			if(ProfileAmps[i] == None):
+				MNM = np.dot(s[i], s[i])
+				dNM = np.dot(RollData, s[i])
+				MLAmp = dNM/MNM
+				self.MLParameters[self.ParamDict['PAmps'][2]][i] = MLAmp
+			else:
+				MLAmp = ProfileAmps[i]
+			if(ProfileNoise[i] == None):
+				Noise =  np.std(Res)**2
+				self.MLParameters[self.ParamDict['PNoise'][2]][i] = MLSigma
+			else:
+				Noise = ProfileNoise[i]
+
+			PSignal = MLAmp * s[i]
+			Res = RollData - PSignal
+
+			PMatrix = np.zeros((self.NToAs,2*Nc+LinearSize, Nc*Nb))
+
+			for i in range(self.NToAs):
+				for j in range(Nc):
+					for k in range(Nb):
+						row = 2 * i + 1
+						col = Nb * i + k
+						PMatrix[row, col] = 1
+						PMatrix[row+1, col] = s[i]
+						if Jitter:
+							PMatrix[2*Nc+linearcount, col] = j[i]
+							linearcount += 1
+						if Width:
+							PMatrix[2*Nc+linearcount, col] = w[i]
+							linearcount += 1
+						if ProfileVar:
+							PMatrix[2*Nc+linearcount, col] = ShapeAmps[:,i]
+						linearcount = 0
+
+		#create the Ji
+		#Create the Si
+		#Create the Wi
+
+		#Create Zi
+		#Create Psi_i
+		#Create d_i
