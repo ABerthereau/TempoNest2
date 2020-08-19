@@ -5458,9 +5458,6 @@ class Likelihood(object):
 
 						RProf = NoScatterS[:self.NFBasis]*MLAmp
 						IProf = NoScatterS[self.NFBasis:]*MLAmp
-
-						RConfProf = RConv*RProf - IConv*IProf
-						IConfProf = IConv*RProf + RConv*IProf
 						pnoise = np.sqrt(Noise)[:self.NFBasis]
 						GradDenom = 1.0/(1.0 + tau**2*w**2*ISS**2)**2
 
@@ -5470,20 +5467,13 @@ class Likelihood(object):
 						profgrad = np.zeros(2*self.NFBasis)
 						profgrad[:self.NFBasis] = RealGrad*(1.0/pnoise)
 						profgrad[self.NFBasis:] = ImagGrad*(1.0/pnoise)
-						for c in range(self.TotCoeff):
-							RProf = InterpBasis[InterpBins[i]*2*NFBasis*TotCoeff + (i-ToA_Index*NFBasis)*TotCoeff + c]
-							IProf = InterpBasis[InterpBins[i]*2*NFBasis*TotCoeff + NFBasis*TotCoeff + (i-ToA_Index*NFBasis)*TotCoeff + c]
-
-							RConfProf = RConv*RProf - IConv*IProf
-							IConfProf = IConv*RProf + RConv*IProf
-
-							ScatterBasis[RSignal_Index*TotCoeff+c] = RConfProf
-							ScatterBasis[ISignal_Index*TotCoeff+c] = IConfProf
+				#see eq 33 wideband paper
 				SGrad= np.dot(profgrad, Res)
 				index=self.ParamDict['Scattering'][0]
 				for c in range(self.NScatterEpochs):
 					grad[index+c] = np.sum(SGrads[self.ScatterInfo[:,0]==c])
 				if self.fitScatterFreqScale==True:
+					#eq 12 scatter paper
 					index=self.ParamDict['ScatterFreqScale'][0]
 					grad[index] = np.sum(-1*SGrads*np.log(self.SSBFreqs/self.ScatterRefFreq)/np.log(10))
 
