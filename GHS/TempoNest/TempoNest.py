@@ -408,26 +408,29 @@ class Likelihood(object):
 					const int32_t  ISignal_Index = SignalIndex[i+Step];
 
 					double ReferencePeriod = ReferencePeriods[ToA_Index];
-
+					//observing frequency
 					double ToA_freq = ToA_Freqs[ToA_Index]/ScatterRefFreq;
-					//double ToA_freq = ToA_Freqs[ToA_Index]/pow(10.0, 9);
+					//FreqScale -> frequency scaling of the scattering
 					ToA_freq = pow(ToA_freq, FreqScale);
 
-
+					// time-scale parameter tau
 					double tau = ScatterParameters[ScatterIndex[i]];
 					double freq = freqs[i]*NBins[ToA_Index]/ReferencePeriod;
 					double w = 2*M_PI*freq;
-					tau = tau/ToA_freq;
 
+					//see eq (10), tau ~ 10^\hat{tau} \nu^-alpha
+					tau = tau/ToA_freq;
+					//PBF factors
 					double RConv = 1.0/(w*w*tau*tau+1);
 					double IConv = -1*w*tau/(w*w*tau*tau+1);
 
 					double RProf = SignalVec[RSignal_Index];
 					double IProf = SignalVec[ISignal_Index];
-
+					//product of the PBF and the fouier rep. of shapelet
 					double RConfProf = RConv*RProf - IConv*IProf;
 					double IConfProf = IConv*RProf + RConv*IProf;
 
+					//define the gradient as in eq 11 and 12
 					double PAmp = ProfileAmps[ToA_Index];
 					double GradDenom = 1.0/((1.0 + tau*tau*w*w)*(1.0 + tau*tau*w*w));
 					double RealSGrad = 2*tau*tau*w*w*log(10.0)*GradDenom*RProf*PAmp + tau*w*(tau*tau*w*w - 1)*log(10.0)*GradDenom*IProf*PAmp;
@@ -438,6 +441,7 @@ class Likelihood(object):
 					SignalVec[RSignal_Index] = RConfProf;
 					SignalVec[ISignal_Index] = IConfProf;
 
+					//same operation but for the jitter vector
 					RConfProf = RConv*JitterVec[RSignal_Index] - IConv*JitterVec[ISignal_Index];
 					IConfProf = IConv*JitterVec[RSignal_Index] + RConv*JitterVec[ISignal_Index];
 
@@ -445,7 +449,11 @@ class Likelihood(object):
 					JitterVec[ISignal_Index] = IConfProf;
 
 					const int32_t InterpIndex = InterpBins[ToA_Index];
+
+
 					int32_t c = 0;
+
+					//Update interpolated basis with scattering but never used
 					for(c = 0; c < TotCoeff; c++){
 
 						RProf = InterpBasis[InterpIndex*2*NFBasis*TotCoeff + (i-ToA_Index*NFBasis)*TotCoeff + c];
@@ -461,6 +469,7 @@ class Likelihood(object):
 				}
 			}
 			""")
+
 
 			self.GPURotateData = mod.get_function("RotateData")
 			self.GPUGetRes = mod.get_function("getRes")
@@ -5453,8 +5462,6 @@ class Likelihood(object):
 						f = np.linspace(1,self.NFBasis,self.NFBasis)/self.FoldingPeriods[i]
 						w = 2.0*np.pi*f
 						ISS = 1.0/(self.psr.ssbfreqs()[i]**ScatterFreqScale/self.ScatterRefFreq**(ScatterFreqScale))
-						ISS2 = 1.0/(self.psr.ssbfreqs()[i]**ScatterFreqScale/10.0**(9.0*ScatterFreqScale))
-						RConv, IConv = self.ConvolveExp(f, tau*ISS)
 
 						RProf = NoScatterS[:self.NFBasis]*MLAmp
 						IProf = NoScatterS[self.NFBasis:]*MLAmp
